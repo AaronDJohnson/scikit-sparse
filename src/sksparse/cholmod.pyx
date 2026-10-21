@@ -1407,6 +1407,7 @@ cdef class CholeskyFactor:
         # Cached factors
         cnp.ndarray _perm
         cnp.ndarray _colcount
+        object _pattern
         object _L
         object _R
         object _D
@@ -1508,6 +1509,10 @@ cdef class CholeskyFactor:
         cdef int minor = -1 if self._factor is NULL else self._factor.minor
         _handle_errors(self._cm.status, minor)
 
+        # The supernodal algorithm requires A to have the analyzed pattern
+        if self._factor.is_super:
+            self._pattern = (A.shape, A.indptr.copy(), A.indices.copy())
+
     def __dealloc__(self):
         """Deallocate memory used by the CholeskyFactor."""
         if self._use_int32:
@@ -1521,6 +1526,15 @@ cdef class CholeskyFactor:
         """Raise an error if the factor is symbolic only."""
         if not self.is_numeric:
             raise CholmodError("Factor is symbolic. Call `factorize` before updating.")
+
+    cdef int _to_simplicial(self) except -1:
+        """Convert the factor to simplicial format, keeping its values."""
+        cdef cholmod_factor *L = self._factor
+        if self._use_int32:
+            cholmod_change_factor(L.xtype, L.is_ll, False, True, True, L, self._cm)
+        else:
+            cholmod_l_change_factor(L.xtype, L.is_ll, False, True, True, L, self._cm)
+        return _handle_errors(self._cm.status)
 
     def _clear_cache(self):
         """Clear cached properties."""
@@ -1687,6 +1701,7 @@ cdef class CholeskyFactor:
         cf._stype = self._stype
         cf.sym_kind = self.sym_kind
         cf.rcond = self.rcond
+        cf._pattern = self._pattern
 
         return cf
 
@@ -1722,7 +1737,7 @@ cdef class CholeskyFactor:
         self._clear_cache()
 
         cdef int to_ll = (kind == "LL")
-        cdef int to_super = self._factor.is_super
+        cdef int to_super = self._factor.is_super and to_ll
         cdef int to_packed = True
         cdef int to_monotonic = self._factor.is_monotonic
 
@@ -1901,9 +1916,20 @@ cdef class CholeskyFactor:
         # Clear cached properties
         self._clear_cache()
 
+        # A supernodal factor is LL.T only, and silently gives a wrong result
+        # for a matrix outside of the analyzed pattern, so use the simplicial
+        # algorithm instead.
+        if self._factor.is_super and (
+            (ldl and self.is_numeric)
+            or A.shape != self._pattern[0]
+            or not np.array_equal(A.indptr, self._pattern[1])
+            or not np.array_equal(A.indices, self._pattern[2])
+        ):
+            self._to_simplicial()
+
         # See CHOLMOD/MATLAB/ldlchol.c and/or lchol.c for details
         self._cm.final_asis = False
-        self._cm.final_super = False
+        self._cm.final_super = not ldl  # keep a supernodal LL.T factor
         self._cm.final_ll = not ldl  # LL.T for Cholesky, LDL.T for LDL
         self._cm.final_pack = True
         self._cm.final_monotonic = True
@@ -2441,6 +2467,8 @@ cdef class CholeskyFactor:
         # Clear cached properties
         self._clear_cache()
 
+        self._to_simplicial()  # CHOLMOD cannot resymbol a supernodal factor
+
         # Get sparse *pattern*
         cdef cholmod_sparse Amatrix
         cdef cholmod_sparse* Ac = &Amatrix
@@ -2502,12 +2530,25 @@ cdef class CholeskyFactor:
         .. versionadded:: 0.2
         """
         self._require_factorized()
-        if self.is_ll:
-            L = self.get_factor()
-            return 2 * np.sum(np.log(L.diagonal()))
+        cdef cholmod_factor *L = self._factor
+        cdef int it = _np_itypenum_from_cholmod(L.itype)
+        cdef int dt = _np_dtypenum_from_cholmod(L.xtype, L.dtype)
+        # The diagonal of L (or D) is the first entry of each column of
+        # a simplicial factor. A supernodal factor stores each supernode as
+        # a dense column-major block with nsrow rows. See cholmod_rcond.c.
+        if L.is_super:
+            S = cnp.PyArray_SimpleNewFromData(1, [L.nsuper + 1], it, L.super)
+            pi = cnp.PyArray_SimpleNewFromData(1, [L.nsuper + 1], it, L.pi)
+            px = cnp.PyArray_SimpleNewFromData(1, [L.nsuper + 1], it, L.px)
+            x = cnp.PyArray_SimpleNewFromData(1, [L.xsize], dt, L.x)
+            s = np.repeat(np.arange(L.nsuper), np.diff(S))
+            j = np.arange(L.n) - S[s]
+            d = x[px[s] + j * (np.diff(pi)[s] + 1)]
         else:
-            _, D = self.get_factor()
-            return np.sum(np.log(D.diagonal()))
+            Lp = cnp.PyArray_SimpleNewFromData(1, [L.n + 1], it, L.p)
+            x = cnp.PyArray_SimpleNewFromData(1, [L.nzmax], dt, L.x)
+            d = x[Lp[:-1]]
+        return (2 if self.is_ll else 1) * np.sum(np.log(d))
 
     def slogdet(self):
         """Compute the sign and (natural) log-determinant of the matrix from
