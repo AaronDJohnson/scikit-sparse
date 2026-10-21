@@ -10,6 +10,10 @@ v0.5.1 (unreleased)
   pattern, uses the simplicial algorithm, as before.
 * :meth:`~sksparse.cholmod.CholeskyFactor.logdet` reads the diagonal directly
   from the factor, instead of copying and converting it.
+* :meth:`~sksparse.cholmod.CholeskyFactor.factorize` checks the shape and data
+  type of the matrix before changing the factor. Previously, a matrix with the
+  wrong data type could leave an ``LDL.T`` factor with the wrong
+  :attr:`~sksparse.cholmod.CholeskyFactor.is_ll`, which gave wrong results.
 
 v0.5.0
 ------

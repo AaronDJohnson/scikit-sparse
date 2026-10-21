@@ -418,3 +418,19 @@ def test_supernodal_change_factor_resymbol():
     f = cho_factor(A, supernodal_mode="supernodal")
     f.resymbol(A[p[:, np.newaxis], p].tocsc())
     assert_LLT_equals_A(f, A, atol=1e-12)
+
+
+@pytest.mark.parametrize("change_factor", [False, True])
+def test_refactor_invalid_input(change_factor):
+    A = _random_spd()
+    N = A.shape[0]
+    f = cho_factor(A, supernodal_mode="supernodal")
+    if change_factor:
+        f.change_factor("LDL")
+    state = (f.is_super, f.is_ll)
+    for B in [_random_spd(N=N + 1), A.astype(np.complex128)]:
+        with pytest.raises(CholmodInvalidInputError):
+            f.factorize(B, ldl=False)
+        assert (f.is_super, f.is_ll) == state  # the factor is intact
+        x = np.arange(1.0, N + 1)
+        assert_allclose(f.solve(A @ x), x)

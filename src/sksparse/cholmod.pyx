@@ -1913,6 +1913,14 @@ cdef class CholeskyFactor:
         if not isinstance(ldl, bool):
             raise ValueError("ldl must be a boolean value.")
 
+        # Check A as CHOLMOD does, since CHOLMOD may change the factor (e.g.,
+        # is_ll) before it rejects A, and the factor is converted below
+        n = A.shape[1] if self.sym_kind == "col" else A.shape[0]
+        if n != self.N or (self._stype != 0 and A.shape[0] != A.shape[1]) or (
+            self.is_numeric and A.dtype != self.dtype
+        ):
+            raise CholmodInvalidInputError("A does not match the factor.")
+
         # Clear cached properties
         self._clear_cache()
 
