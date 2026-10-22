@@ -1536,6 +1536,14 @@ cdef class CholeskyFactor:
             cholmod_l_change_factor(L.xtype, L.is_ll, False, True, True, L, self._cm)
         return _handle_errors(self._cm.status)
 
+    cdef bint _has_pattern(self, object A) except -1:
+        """Check whether A has the analyzed (supernodal) sparsity pattern."""
+        return self._pattern is not None and (
+            A.shape == self._pattern[0]
+            and np.array_equal(A.indptr, self._pattern[1])
+            and np.array_equal(A.indices, self._pattern[2])
+        )
+
     def _clear_cache(self):
         """Clear cached properties."""
         self._factor_view = None
@@ -1902,7 +1910,17 @@ cdef class CholeskyFactor:
         """
         assert self._factor is not NULL, "The factor has not been initialized."
 
-        A, _, _ = validate_csc_input(A, ensure_double=False)
+        # Skip validation of a matrix with exactly the analyzed pattern, which
+        # is canonical, as is common when refactorizing
+        cdef bint same_pattern = (
+            issparse(A) and A.format == "csc" and A.dtype.kind in "fc"
+            and A.indptr.dtype == A.indices.dtype == self.itype
+            and A.data.shape == A.indices.shape and A.data.flags.c_contiguous
+            and self._has_pattern(A)
+        )
+        if not same_pattern:
+            A, _, _ = validate_csc_input(A, ensure_double=False)
+            same_pattern = self._has_pattern(A)
 
         if ldl is None:
             if self.is_numeric:
@@ -1927,12 +1945,7 @@ cdef class CholeskyFactor:
         # A supernodal factor is LL.T only, and silently gives a wrong result
         # for a matrix outside of the analyzed pattern, so use the simplicial
         # algorithm instead.
-        if self._factor.is_super and (
-            (ldl and self.is_numeric)
-            or A.shape != self._pattern[0]
-            or not np.array_equal(A.indptr, self._pattern[1])
-            or not np.array_equal(A.indices, self._pattern[2])
-        ):
+        if self._factor.is_super and ((ldl and self.is_numeric) or not same_pattern):
             self._to_simplicial()
 
         # See CHOLMOD/MATLAB/ldlchol.c and/or lchol.c for details
