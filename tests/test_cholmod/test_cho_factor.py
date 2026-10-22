@@ -417,6 +417,7 @@ def test_supernodal_change_factor_resymbol():
     assert_allclose((L @ D @ L.T).toarray(), PAPT, atol=1e-12)
     f = cho_factor(A, supernodal_mode="supernodal")
     f.resymbol(A[p[:, np.newaxis], p].tocsc())
+    assert not f.is_super  # CHOLMOD can only resymbol a simplicial factor
     assert_LLT_equals_A(f, A, atol=1e-12)
 
 
