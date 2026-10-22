@@ -421,6 +421,28 @@ def test_supernodal_change_factor_resymbol():
     assert_LLT_equals_A(f, A, atol=1e-12)
 
 
+def test_refactor_skips_validation(monkeypatch):
+    A = _random_spd()
+    f = cho_factor(A, supernodal_mode="supernodal")
+
+    def validate(*args, **kwargs):
+        raise RuntimeError("validated")
+
+    monkeypatch.setattr("sksparse.cholmod.validate_csc_input", validate)
+    f.factorize(2 * A)  # exactly the analyzed pattern
+    assert f.is_super
+    assert_LLT_equals_A(f, 2 * A, atol=1e-12)
+    C = 2 * A
+    other = np.int64 if f.itype == np.int32 else np.int32
+    C.indptr, C.indices = C.indptr.astype(other), C.indices.astype(other)
+    D, E = 2 * A, 2 * A
+    D.data = D.data[:-1]  # too short
+    E.data = np.repeat(E.data, 2)[::2]  # not contiguous
+    for B in [C, D, E, (2 * A).tocoo(), 2 * A.toarray()]:
+        with pytest.raises(RuntimeError, match="validated"):
+            f.factorize(B)
+
+
 @pytest.mark.parametrize("change_factor", [False, True])
 def test_refactor_invalid_input(change_factor):
     A = _random_spd()
